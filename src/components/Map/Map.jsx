@@ -1,586 +1,256 @@
-import { useEffect, useRef, useState } from "react";
+
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-    MapContainer,
-    TileLayer,
-    GeoJSON,
-    useMap
+  MapContainer,
+  TileLayer,
+  GeoJSON,
+  useMap
 } from "react-leaflet";
 
 import L from "leaflet";
-
 import "leaflet/dist/leaflet.css";
 
+import { buscarGeoJSONDistritos } from "../../services/api";
 
 // ==========================================
-// ESTILOS DOS MUNICÍPIOS
+// ESTILOS DOS DISTRITOS
 // ==========================================
 
 const estiloNormal = {
-
-    color: "#1b5e20",
-
-    weight: 1,
-
-    fillColor: "#c8e6c1",
-
-    fillOpacity: 0.35
-
+  color: "#1b5e20",
+  weight: 1,
+  fillColor: "#c8e6c1",
+  fillOpacity: 0.35
 };
-
 
 const estiloHover = {
-
-    color: "#000000",
-
-    weight: 3,
-
-    fillColor: "#c8e6c1",
-
-    fillOpacity: 0.65
-
+  color: "#000000",
+  weight: 3,
+  fillColor: "#c8e6c1",
+  fillOpacity: 0.65
 };
-
 
 const estiloSelecionado = {
-
-    color: "#1565c0",
-
-    weight: 4,
-
-    fillColor: "#90caf9",
-
-    fillOpacity: 0.75
-
+  color: "#1565c0",
+  weight: 3,
+  fillColor: "#90caf9",
+  fillOpacity: 0.7
 };
 
+function CamadaDistritos({ distritos, idSelecionado, onSelecionarDistrito }) {
+  const camadaRef = useRef(null);
+  const selecaoRef = useRef(null);
+
+  useEffect(() => {
+    selecaoRef.current = idSelecionado;
+    camadaRef.current?.eachLayer((camada) => {
+      const selecionado = camada.feature.properties.id_territorial === idSelecionado;
+      camada.setStyle(selecionado ? estiloSelecionado : estiloNormal);
+    });
+  }, [idSelecionado, distritos]);
+
+  const configurarDistrito = useCallback((feature, camada) => {
+    const { id_territorial, nome } = feature.properties;
+    // Conteudo textual evita interpretar nomes territoriais como HTML.
+    const nomeTooltip = document.createElement("span");
+    nomeTooltip.textContent = nome;
+    camada.bindTooltip(nomeTooltip, {
+      sticky: true,
+      direction: "auto",
+      opacity: 0.95
+    });
+    camada.on({
+      mouseover: () => {
+        if (selecaoRef.current !== id_territorial) camada.setStyle(estiloHover);
+      },
+      mouseout: () => {
+        camada.setStyle(
+          selecaoRef.current === id_territorial ? estiloSelecionado : estiloNormal
+        );
+      },
+      click: () => onSelecionarDistrito({ id_territorial, nome })
+    });
+  }, [onSelecionarDistrito]);
+
+  return (
+    <GeoJSON
+      ref={camadaRef}
+      data={distritos}
+      style={estiloNormal}
+      onEachFeature={configurarDistrito}
+    />
+  );
+}
 
 // ==========================================
-// AJUSTAR MAPA
+// AJUSTE AUTOMÁTICO DO MAPA
 // ==========================================
 
 function AjustarMapa({ geojson }) {
+  const map = useMap();
 
-    const map = useMap();
+  useEffect(() => {
+    if (!geojson) return;
 
-    useEffect(() => {
+    const camada = L.geoJSON(geojson);
+    const limites = camada.getBounds();
 
-        if (!geojson) {
-            return;
-        }
+    if (!limites.isValid()) return;
 
-        const camada = L.geoJSON(geojson);
+    const container = map.getContainer();
+    let quadro;
+    let larguraAnterior = 0;
+    let alturaAnterior = 0;
 
-        const limites = camada.getBounds();
+    const enquadrar = () => {
+      const largura = container.clientWidth;
+      const altura = container.clientHeight;
+      // Aguarda um tamanho util e evita repetir o ajuste para o mesmo tamanho.
+      if (largura <= 32 || altura <= 32) return;
+      if (largura === larguraAnterior && altura === alturaAnterior) return;
 
-        // Ajusta o mapa para São Paulo
-        map.fitBounds(limites);
-
-        // Impede a navegação muito distante
-        map.setMaxBounds(limites);
-
-        // Restrição rígida
-        map.options.maxBoundsViscosity = 1.0;
-
-    }, [geojson, map]);
-
-    return null;
-}
-
-
-// ==========================================
-// MAPA
-// ==========================================
-
-function Map() {
-
-    const [municipios, setMunicipios] = useState(null);
-
-
-    // Município atualmente selecionado
-    const [
-        municipioSelecionado,
-        setMunicipioSelecionado
-    ] = useState(null);
-
-
-    // Guarda a camada do município selecionado
-    const camadaSelecionada = useRef(null);
-
-
-    // ==========================================
-    // FECHAR PAINEL
-    // ==========================================
-
-    const fecharPainel = () => {
-
-        // Se existir um município selecionado
-        if (camadaSelecionada.current) {
-
-            // Volta o município para o estilo normal
-            camadaSelecionada.current.setStyle(
-                estiloNormal
-            );
-
-            // Limpa a referência
-            camadaSelecionada.current = null;
-
-        }
-
-        // Fecha o painel
-        setMunicipioSelecionado(null);
-
+      map.stop();
+      map.invalidateSize({ pan: false, animate: false });
+      // getBoundsZoom considera o minZoom atual: libere-o antes do calculo.
+      map.setMinZoom(0);
+      const zoomMinimo = map.getBoundsZoom(limites, false, L.point(32, 32));
+      map.fitBounds(limites, {
+        padding: [16, 16],
+        maxZoom: zoomMinimo,
+        animate: false
+      });
+      map.setMinZoom(zoomMinimo);
+      larguraAnterior = largura;
+      alturaAnterior = altura;
     };
 
-
-    // ==========================================
-    // CARREGAR GEOJSON
-    // ==========================================
-
-    useEffect(() => {
-
-        fetch("/maps/sao_paulo_municipios.geojson")
-
-            .then(response => {
-
-                if (!response.ok) {
-
-                    throw new Error(
-                        "Não foi possível carregar o GeoJSON dos municípios."
-                    );
-
-                }
-
-                return response.json();
-
-            })
-
-            .then(data => {
-
-                console.log(
-                    "GeoJSON carregado:",
-                    data
-                );
-
-                console.log(
-                    "Quantidade de municípios:",
-                    data.features.length
-                );
-
-                setMunicipios(data);
-
-            })
-
-            .catch(error => {
-
-                console.error(
-                    "Erro ao carregar municípios:",
-                    error
-                );
-
-            });
-
-    }, []);
-
-
-    // ==========================================
-    // INTERFACE
-    // ==========================================
-
-    return (
-
-        <div
-            style={{
-                height: "100%",
-                width: "100%",
-                position: "relative"
-            }}
-        >
-
-            <MapContainer
-
-                center={[-22.2, -48.8]}
-
-                zoom={7}
-
-                style={{
-                    height: "100%",
-                    width: "100%"
-                }}
-
-            >
-
-                {/* ==================================
-                    MAPA BASE
-                ================================== */}
-
-                <TileLayer
-
-                    url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-
-                    attribution="&copy; OpenStreetMap contributors"
-
-                />
-
-
-                {/* ==================================
-                    MUNICÍPIOS
-                ================================== */}
-
-                {municipios && (
-
-                    <>
-
-                        <GeoJSON
-
-                            data={municipios}
-
-                            style={estiloNormal}
-
-
-                            // ==================================
-                            // EVENTOS DOS MUNICÍPIOS
-                            // ==================================
-
-                            onEachFeature={(feature, layer) => {
-
-                                const propriedades =
-                                    feature.properties;
-
-
-                                // ==================================
-                                // POPUP
-                                // ==================================
-
-                                layer.bindPopup(`
-
-                                    <div>
-
-                                        <h3>
-                                            ${propriedades.NM_MUN}
-                                        </h3>
-
-                                        <p>
-                                            <strong>
-                                                Código IBGE:
-                                            </strong>
-
-                                            ${propriedades.CD_MUN}
-                                        </p>
-
-                                        <p>
-                                            <strong>
-                                                UF:
-                                            </strong>
-
-                                            ${propriedades.SIGLA_UF}
-                                        </p>
-
-                                        <p>
-                                            <strong>
-                                                Área:
-                                            </strong>
-
-                                            ${propriedades.AREA_KM2}
-                                            km²
-                                        </p>
-
-                                    </div>
-
-                                `);
-
-
-                                // ==================================
-                                // HOVER + CLIQUE
-                                // ==================================
-
-                                layer.on({
-
-                                    // ==================================
-                                    // MOUSE ENTRA
-                                    // ==================================
-
-                                    mouseover: (evento) => {
-
-                                        // Abre o popup
-                                        evento.target.openPopup();
-
-
-                                        // Se este município já estiver
-                                        // selecionado, mantém o destaque
-                                        if (
-                                            camadaSelecionada.current ===
-                                            evento.target
-                                        ) {
-
-                                            evento.target.setStyle(
-                                                estiloSelecionado
-                                            );
-
-                                            return;
-
-                                        }
-
-
-                                        // Aplica o estilo de hover
-                                        evento.target.setStyle(
-                                            estiloHover
-                                        );
-
-                                    },
-
-
-                                    // ==================================
-                                    // MOUSE SAI
-                                    // ==================================
-
-                                    mouseout: (evento) => {
-
-                                        // Fecha o popup
-                                        evento.target.closePopup();
-
-
-                                        // Se este município estiver
-                                        // selecionado, mantém o destaque
-                                        if (
-                                            camadaSelecionada.current ===
-                                            evento.target
-                                        ) {
-
-                                            evento.target.setStyle(
-                                                estiloSelecionado
-                                            );
-
-                                            return;
-
-                                        }
-
-
-                                        // Volta para o estilo normal
-                                        evento.target.setStyle(
-                                            estiloNormal
-                                        );
-
-                                    },
-
-
-                                    // ==================================
-                                    // CLIQUE
-                                    // ==================================
-
-                                    click: (evento) => {
-
-                                        // ==================================
-                                        // REMOVE DESTAQUE ANTERIOR
-                                        // ==================================
-
-                                        if (
-                                            camadaSelecionada.current
-                                        ) {
-
-                                            camadaSelecionada.current.setStyle(
-                                                estiloNormal
-                                            );
-
-                                        }
-
-
-                                        // ==================================
-                                        // DESTACA NOVO MUNICÍPIO
-                                        // ==================================
-
-                                        evento.target.setStyle(
-                                            estiloSelecionado
-                                        );
-
-
-                                        // Guarda a nova camada selecionada
-                                        camadaSelecionada.current =
-                                            evento.target;
-
-
-                                        // ==================================
-                                        // SALVA MUNICÍPIO
-                                        // ==================================
-
-                                        setMunicipioSelecionado(
-                                            propriedades
-                                        );
-
-
-                                        // ==================================
-                                        // FECHA POPUP DO LEAFLET
-                                        // ==================================
-
-                                        evento.target.closePopup();
-
-
-                                        console.log(
-                                            "Município selecionado:",
-                                            propriedades
-                                        );
-
-                                    }
-
-                                });
-
-                            }}
-
-                        />
-
-
-                        {/* ==================================
-                            AJUSTAR MAPA
-                        ================================== */}
-
-                        <AjustarMapa
-                            geojson={municipios}
-                        />
-
-                    </>
-
-                )}
-
-            </MapContainer>
-
-
-            {/* ==========================================
-                PAINEL DO MUNICÍPIO SELECIONADO
-            ========================================== */}
-
-            {municipioSelecionado && (
-
-                <div
-
-                    style={{
-
-                        position: "absolute",
-
-                        top: "20px",
-
-                        right: "20px",
-
-                        width: "280px",
-
-                        padding: "20px",
-
-                        backgroundColor: "white",
-
-                        borderRadius: "10px",
-
-                        boxShadow:
-                            "0 4px 15px rgba(0,0,0,0.2)",
-
-                        zIndex: 1000
-
-                    }}
-
-                >
-
-                    {/* ==================================
-                        BOTÃO FECHAR
-                    ================================== */}
-
-                    <button
-
-                        onClick={fecharPainel}
-
-                        style={{
-
-                            position: "absolute",
-
-                            top: "10px",
-
-                            right: "10px",
-
-                            border: "none",
-
-                            background: "transparent",
-
-                            fontSize: "20px",
-
-                            cursor: "pointer"
-
-                        }}
-
-                    >
-
-                        ✕
-
-                    </button>
-
-
-                    {/* ==================================
-                        NOME DO MUNICÍPIO
-                    ================================== */}
-
-                    <h2>
-
-                        {municipioSelecionado.NM_MUN}
-
-                    </h2>
-
-
-                    {/* ==================================
-                        CÓDIGO IBGE
-                    ================================== */}
-
-                    <p>
-
-                        <strong>
-                            Código IBGE:
-                        </strong>
-
-                        <br />
-
-                        {municipioSelecionado.CD_MUN}
-
-                    </p>
-
-
-                    {/* ==================================
-                        UF
-                    ================================== */}
-
-                    <p>
-
-                        <strong>
-                            UF:
-                        </strong>
-
-                        <br />
-
-                        {municipioSelecionado.SIGLA_UF}
-
-                    </p>
-
-
-                    {/* ==================================
-                        ÁREA
-                    ================================== */}
-
-                    <p>
-
-                        <strong>
-                            Área:
-                        </strong>
-
-                        <br />
-
-                        {municipioSelecionado.AREA_KM2}
-                        {" "}km²
-
-                    </p>
-
-                </div>
-
-            )}
-
-        </div>
-
-    );
-
+    const agendarEnquadramento = () => {
+      cancelAnimationFrame(quadro);
+      quadro = requestAnimationFrame(enquadrar);
+    };
+
+    agendarEnquadramento();
+    // Observa tambem mudancas de tamanho do container sem resize da janela.
+    const observador = new ResizeObserver(agendarEnquadramento);
+    observador.observe(container);
+
+    return () => {
+      observador.disconnect();
+      cancelAnimationFrame(quadro);
+    };
+  }, [geojson, map]);
+
+  return null;
 }
 
+// ==========================================
+// COMPONENTE PRINCIPAL DO MAPA
+// ==========================================
+
+function Map({ distritoSelecionado, onSelecionarDistrito }) {
+  const [distritos, setDistritos] = useState(null);
+  const [erroMapa, setErroMapa] = useState("");
+
+  useEffect(() => {
+    let ativo = true;
+
+    async function carregarDistritos() {
+      try {
+        const geojson = await buscarGeoJSONDistritos();
+
+        if (ativo) {
+          setDistritos(geojson);
+          setErroMapa("");
+        }
+      } catch (error) {
+        console.error(
+          "Erro ao carregar o GeoJSON dos distritos:",
+          error
+        );
+
+        if (ativo) {
+          setErroMapa(
+            "Falha ao carregar o mapa dos distritos de São Paulo. Verifique a API e a malha distrital."
+          );
+        }
+      }
+    }
+
+    carregarDistritos();
+
+    return () => {
+      ativo = false;
+    };
+  }, []);
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        width: "100%",
+        position: "relative"
+      }}
+    >
+      {/* Erro ao carregar a malha distrital */}
+      {erroMapa && (
+        <div
+          role="alert"
+          style={{
+            position: "absolute",
+            top: 10,
+            left: 10,
+            zIndex: 1000,
+            padding: 12,
+            backgroundColor: "white",
+            color: "#b91c1c",
+            borderRadius: 6
+          }}
+        >
+          {erroMapa}
+        </div>
+      )}
+
+      {/* Mapa interativo */}
+      <MapContainer
+        center={[-23.55, -46.63]}
+        zoom={10}
+        zoomSnap={0.25}
+        maxZoom={18}
+        dragging={false}
+        scrollWheelZoom={false}
+        doubleClickZoom={false}
+        touchZoom={false}
+        boxZoom={false}
+        keyboard={false}
+        zoomControl={true}
+        trackResize={false}
+        style={{
+          height: "100%",
+          width: "100%"
+        }}
+      >
+        <TileLayer
+          url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution="&copy; OpenStreetMap contributors"
+        />
+
+        {distritos && (
+          <>
+            <CamadaDistritos
+              distritos={distritos}
+              idSelecionado={distritoSelecionado?.id_territorial ?? null}
+              onSelecionarDistrito={onSelecionarDistrito}
+            />
+
+            <AjustarMapa geojson={distritos} />
+          </>
+        )}
+      </MapContainer>
+
+    </div>
+  );
+}
 
 export default Map;
+
